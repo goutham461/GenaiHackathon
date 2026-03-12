@@ -12,6 +12,7 @@ import Exams from './pages/Exams';
 import Scholarships from './pages/Scholarships';
 import Letters from './pages/Letters';
 import LetterViewer from './pages/LetterViewer';
+import Analytics from './pages/Analytics';
 import Layout from './layout/Layout';
 
 const PrivateRoute = ({ children }) => {
@@ -37,7 +38,7 @@ function App() {
             <Route path="/letters/:id" element={<LetterViewer />} />
             <Route path="/factory" element={<AgentFactory />} />
             <Route path="/chat" element={<Chat />} />
-            <Route path="/chat" element={<Chat />} />
+            <Route path="/analytics" element={<Analytics />} />
           </Route>
         </Routes>
       </Router>

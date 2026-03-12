@@ -3,6 +3,8 @@ import api from '../services/api';
 import { AuthContext } from '../context/AuthContext';
 import { Send, Bot, User as UserIcon, Zap, Loader, ChevronDown, BookOpen, AlertTriangle, Award, FileText, BarChart2, UserCheck, Users, GraduationCap } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import axios from 'axios';
 
 const AGENT_ICONS = {
   warning: <AlertTriangle size={14} />,
@@ -29,10 +31,60 @@ const SUGGESTED = [
   "Letter status overview",
 ];
 
+// Dynamic Chart Component
+const DynamicChart = ({ endpoint }) => {
+  const [data, setData] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const config = token ? { headers: { Authorization: `Token ${token}` } } : {};
+        const res = await axios.get(`http://localhost:8000${endpoint}`, config);
+        setData(res.data);
+      } catch (err) {
+        console.error(err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchData();
+  }, [endpoint]);
+
+  if (loading) return <div className="p-4 bg-white/50 rounded-xl text-center text-xs animate-pulse">Loading Chart Data...</div>;
+  if (!data || data.length === 0) return null;
+
+  const keys = Object.keys(data[0]);
+  const xAxisKey = keys[0];
+  const barKeys = keys.slice(1);
+
+  return (
+    <div className="w-full h-64 mt-3 bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f3f4f6" />
+          <XAxis dataKey={xAxisKey} axisLine={false} tickLine={false} tick={{ fontSize: 10 }} />
+          <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10 }} />
+          <Tooltip cursor={{ fill: '#f9fafb' }} contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
+          <Legend wrapperStyle={{ fontSize: 10, paddingTop: '10px' }} />
+          {barKeys.map((key, i) => (
+            <Bar key={key} dataKey={key} fill={i === 0 ? "#3b82f6" : "#6366f1"} radius={[4, 4, 0, 0]} barSize={32} />
+          ))}
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+};
+
 // Simple markdown-to-JSX renderer
 const renderMarkdown = (text) => {
   if (!text) return null;
   const parts = text.split('\n').map((line, i) => {
+    if (line.trim().startsWith('[CHART:')) {
+      const endpoint = line.replace('[CHART:bar:', '').replace(']', '').trim();
+      return <DynamicChart key={i} endpoint={endpoint} />;
+    }
     if (line.startsWith('**') && line.endsWith('**')) {
       return <p key={i} className="font-bold text-gray-900">{line.replace(/\*\*/g, '')}</p>;
     }

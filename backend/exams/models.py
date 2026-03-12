@@ -7,6 +7,8 @@ class Exam(models.Model):
     course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name='exams')
     exam_type = models.CharField(max_length=50) # 'midterm', 'final'
     date = models.DateField()
+    start_time = models.TimeField(null=True, blank=True)
+    end_time = models.TimeField(null=True, blank=True)
     room = models.CharField(max_length=50, blank=True, null=True)
     invigilator = models.ForeignKey(Faculty, on_delete=models.SET_NULL, null=True, blank=True)
 

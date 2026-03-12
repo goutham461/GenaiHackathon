@@ -11,7 +11,8 @@ import {
   GraduationCap, 
   Calendar, 
   Award, 
-  FileText 
+  FileText,
+  BarChart2
 } from 'lucide-react';
 
 const Layout = () => {
@@ -35,6 +36,7 @@ const Layout = () => {
     { name: 'Exams', path: '/exams', icon: <Calendar size={20} />, roles: ['teacher'] },
     { name: 'Scholarships', path: '/scholarships', icon: <Award size={20} />, roles: ['teacher', 'student'] },
     { name: 'Letters', path: '/letters', icon: <FileText size={20} />, roles: ['teacher', 'student'] },
+    { name: 'Analytics', path: '/analytics', icon: <BarChart2 size={20} />, roles: ['teacher'] },
     { name: 'Agent Factory', path: '/factory', icon: <Settings size={20} />, roles: ['teacher'] },
     { name: 'Chat', path: '/chat', icon: <MessageSquare size={20} />, roles: ['teacher', 'student'] },
   ].filter(item => item.roles.includes(user?.role));
