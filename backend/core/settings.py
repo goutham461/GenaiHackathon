@@ -31,8 +31,16 @@ DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
 ALLOWED_HOSTS = ['*']
 
-# Gemini API Key
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+# Gemini API Key Pool (Supports multiple keys separated by comma)
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY') # Legacy support
+GEMINI_API_POOL = [k.strip() for k in os.getenv('GEMINI_API_POOL', '').split(',') if k.strip()]
+if GEMINI_API_KEY and GEMINI_API_KEY not in GEMINI_API_POOL:
+    GEMINI_API_POOL.append(GEMINI_API_KEY)
+
+# Master kill-switch to stop all Gemini API calls (Offline Mode)
+GEMINI_DISABLED = os.getenv('GEMINI_DISABLED', 'False').lower() == 'true'
+
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 
 
 # Application definition

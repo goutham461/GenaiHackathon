@@ -1,12 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import api from '../services/api';
-import { Users, Search, Plus, Trash2, Filter, ChevronRight } from 'lucide-react';
+import { Users, Search, Plus, Trash2, Edit2, Filter, ChevronRight, X } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 const Students = () => {
   const [students, setStudents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [editingStudent, setEditingStudent] = useState(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [formData, setFormData] = useState({ name: '', department: 'CS', year: 1, roll_no: '', email: '' });
 
   useEffect(() => {
     fetchStudents();
@@ -20,6 +24,52 @@ const Students = () => {
       console.error(err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleEnroll = async (e) => {
+    e.preventDefault();
+    try {
+      await api.post('/students/', formData);
+      setIsAddModalOpen(false);
+      setFormData({ name: '', department: 'CS', year: 1, roll_no: '', email: '' });
+      fetchStudents();
+    } catch (err) {
+      alert("Failed to enroll student. Check if Roll No already exists.");
+    }
+  };
+
+  const handleEdit = (student) => {
+    setEditingStudent(student);
+    setFormData({
+      name: student.name,
+      department: student.department || 'CS',
+      year: student.year || 1,
+      roll_no: student.roll_no,
+      email: student.email || ''
+    });
+    setIsModalOpen(true);
+  };
+
+  const handleUpdate = async (e) => {
+    e.preventDefault();
+    try {
+      await api.patch(`/students/${editingStudent.roll_no}/`, formData);
+      setIsModalOpen(false);
+      fetchStudents();
+    } catch (err) {
+      alert("Failed to update student");
+    }
+  };
+
+  const handleDelete = async (roll_no) => {
+    if (window.confirm("Are you sure you want to delete this student?")) {
+      try {
+        await api.delete(`/students/${roll_no}/`);
+        fetchStudents();
+      } catch (err) {
+        alert("Failed to delete student");
+      }
     }
   };
 
@@ -39,7 +89,13 @@ const Students = () => {
           <p className="text-gray-500">View, enroll, and manage student records across departments.</p>
         </motion.div>
         
-        <button className="flex items-center space-x-2 bg-blue-600 text-white px-5 py-2.5 rounded-xl hover:bg-blue-700 transition shadow-lg shadow-blue-500/20 font-semibold">
+        <button 
+          onClick={() => {
+            setFormData({ name: '', department: 'CS', year: 1, roll_no: '', email: '' });
+            setIsAddModalOpen(true);
+          }}
+          className="flex items-center space-x-2 bg-blue-600 text-white px-5 py-2.5 rounded-xl hover:bg-blue-700 transition shadow-lg shadow-blue-500/20 font-semibold"
+        >
           <Plus size={18} />
           <span>Enroll New Student</span>
         </button>
@@ -114,11 +170,17 @@ const Students = () => {
                   </span>
                 </td>
                 <td className="px-6 py-4 text-right opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button className="p-2 text-gray-400 hover:text-red-500 transition-colors">
-                    <Trash2 size={18} />
+                  <button 
+                    onClick={(e) => { e.stopPropagation(); handleEdit(s); }}
+                    className="p-2 text-gray-400 hover:text-blue-500 transition-colors"
+                  >
+                    <Edit2 size={18} />
                   </button>
-                  <button className="p-2 text-gray-400 hover:text-blue-500 transition-colors">
-                    <ChevronRight size={18} />
+                  <button 
+                    onClick={(e) => { e.stopPropagation(); handleDelete(s.roll_no); }}
+                    className="p-2 text-gray-400 hover:text-red-500 transition-colors"
+                  >
+                    <Trash2 size={18} />
                   </button>
                 </td>
               </motion.tr>
@@ -126,6 +188,175 @@ const Students = () => {
           </tbody>
         </table>
       </div>
+
+      {/* Edit Modal */}
+      {isModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" onClick={() => setIsModalOpen(false)}></div>
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="glass max-w-md w-full p-8 rounded-3xl border-white relative z-10 shadow-2xl"
+          >
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-2xl font-bold text-gray-900">Edit Student</h3>
+              <button onClick={() => setIsModalOpen(false)} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleUpdate} className="space-y-4">
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-1.5">Full Name</label>
+                <input 
+                  type="text" 
+                  className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
+                  value={formData.name}
+                  onChange={(e) => setFormData({...formData, name: e.target.value})}
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-1.5">Department</label>
+                <select 
+                  className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
+                  value={formData.department}
+                  onChange={(e) => setFormData({...formData, department: e.target.value})}
+                >
+                  <option value="CS">CS</option>
+                  <option value="IT">IT</option>
+                  <option value="ECE">ECE</option>
+                  <option value="EEE">EEE</option>
+                  <option value="MECH">MECH</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-1.5">Academic Year</label>
+                <input 
+                  type="number" 
+                  min="1" max="4"
+                  className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
+                  value={formData.year}
+                  onChange={(e) => setFormData({...formData, year: parseInt(e.target.value)})}
+                  required
+                />
+              </div>
+
+              <div className="pt-4 flex space-x-3">
+                <button 
+                  type="button"
+                  onClick={() => setIsModalOpen(false)}
+                  className="flex-1 py-3 font-semibold text-gray-600 hover:bg-gray-100 rounded-xl transition"
+                >
+                  Cancel
+                </button>
+                <button 
+                  type="submit"
+                  className="flex-1 py-3 bg-blue-600 text-white font-semibold rounded-xl hover:bg-blue-700 transition shadow-lg shadow-blue-500/20"
+                >
+                  Save Changes
+                </button>
+              </div>
+            </form>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Add Modal */}
+      {isAddModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" onClick={() => setIsAddModalOpen(false)}></div>
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="glass max-w-md w-full p-8 rounded-3xl border-white relative z-10 shadow-2xl"
+          >
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-2xl font-bold text-gray-900">Enroll New Student</h3>
+              <button onClick={() => setIsAddModalOpen(false)} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleEnroll} className="space-y-4">
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-1.5">Full Name</label>
+                <input 
+                  type="text" 
+                  className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
+                  value={formData.name}
+                  onChange={(e) => setFormData({...formData, name: e.target.value})}
+                  required
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-1.5">Roll No</label>
+                  <input 
+                    type="text" 
+                    placeholder="e.g. CS1001"
+                    className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
+                    value={formData.roll_no}
+                    onChange={(e) => setFormData({...formData, roll_no: e.target.value.toUpperCase()})}
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-1.5">Department</label>
+                  <select 
+                    className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
+                    value={formData.department}
+                    onChange={(e) => setFormData({...formData, department: e.target.value})}
+                  >
+                    <option value="CS">CS</option>
+                    <option value="IT">IT</option>
+                    <option value="ECE">ECE</option>
+                    <option value="EEE">EEE</option>
+                    <option value="MECH">MECH</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-1.5">Email Address</label>
+                <input 
+                  type="email" 
+                  className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
+                  value={formData.email}
+                  onChange={(e) => setFormData({...formData, email: e.target.value})}
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-1.5">Academic Year</label>
+                <input 
+                  type="number" 
+                  min="1" max="4"
+                  className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
+                  value={formData.year}
+                  onChange={(e) => setFormData({...formData, year: parseInt(e.target.value)})}
+                  required
+                />
+              </div>
+
+              <div className="pt-4 flex space-x-3">
+                <button 
+                  type="button"
+                  onClick={() => setIsAddModalOpen(false)}
+                  className="flex-1 py-3 font-semibold text-gray-600 hover:bg-gray-100 rounded-xl transition"
+                >
+                  Cancel
+                </button>
+                <button 
+                  type="submit"
+                  className="flex-1 py-3 bg-blue-600 text-white font-semibold rounded-xl hover:bg-blue-700 transition shadow-lg shadow-blue-500/20"
+                >
+                  Enroll Student
+                </button>
+              </div>
+            </form>
+          </motion.div>
+        </div>
+      )}
     </div>
   );
 };
