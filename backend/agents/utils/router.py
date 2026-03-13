@@ -31,6 +31,63 @@ except ImportError:
     _genai_available = False
 
 
+class NLPEngine:
+    """Centralized Regex & Entity Extraction Engine for Campus NLP."""
+    
+    DEPT_PATTERN = r'\b(CS|CSE|IT|ECE|EEE|MECH|CIVIL|AI|DS|DATA\s*SCIENCE|ELECTRONICS|MECHANICAL)\b'
+    YEAR_PATTERN = r'\b(1|2|3|4)(?:st|nd|rd|th)?\s*year\b|\b(first|second|third|fourth|final)\s*year\b'
+    GPA_GT_PATTERN = r'gpa\s+(?:above|greater|higher|>|>=)\s*(\d+(?:\.\d+)?)'
+    GPA_LT_PATTERN = r'gpa\s+(?:below|less|lower|<|<=)\s*(\d+(?:\.\d+)?)'
+    GPA_BW_PATTERN = r'gpa\s+between\s+(\d+(?:\.\d+)?)\s+(?:and|&)\s+(\d+(?:\.\d+)?)'
+    
+    ROLL_PATTERNS = [
+        r'roll\s*(?:no|number)?[:\s\-]+([A-Z0-9]+)', # Roll: CS1001
+        r'\b([A-Z]{2,4}\d{3,4})\b',                   # CS1001
+        r'\b(\d{5,7})\b',                            # 123456
+    ]
+
+    @classmethod
+    def extract_roll_no(cls, text):
+        text = text.upper()
+        for pat in cls.ROLL_PATTERNS:
+            m = re.search(pat, text)
+            if m: return m.group(1)
+        return None
+
+    @classmethod
+    def extract_dept(cls, text):
+        m = re.search(cls.DEPT_PATTERN, text.upper())
+        if m:
+            d = m.group(1).replace(' ', '')
+            if d in ['CSE', 'CS']: return 'CS'
+            if d in ['DATA SCIENCE', 'DS']: return 'DS'
+            if d == 'MECHANICAL': return 'MECH'
+            if d == 'ELECTRONICS': return 'ECE'
+            return d
+        return None
+
+    @classmethod
+    def extract_year(cls, text):
+        m = re.search(cls.YEAR_PATTERN, text.lower())
+        if m:
+            yr_map = {'first':1,'second':2,'third':3,'fourth':4,'final':4}
+            val = m.group(2) if m.group(2) else m.group(1)
+            return yr_map.get(val, int(val) if val.isdigit() else None)
+        return None
+
+    @classmethod
+    def extract_gpa_filters(cls, text):
+        text = text.lower()
+        gt = re.search(cls.GPA_GT_PATTERN, text)
+        lt = re.search(cls.GPA_LT_PATTERN, text)
+        bw = re.search(cls.GPA_BW_PATTERN, text)
+        return {
+            'gt': float(gt.group(1)) if gt else None,
+            'lt': float(lt.group(1)) if lt else None,
+            'bw': (float(bw.group(1)), float(bw.group(2))) if bw else None
+        }
+
+
 class AgentRouter:
     """
     Intelligent Campus AI Router.
@@ -40,20 +97,14 @@ class AgentRouter:
     """
 
     AGENT_KEYWORDS = {
-        'scholarship':['scholarship', 'laptop', 'tn laptop', 'ambedkar', 'welfare', 'eligible', 'stipend', 'grant', 'scheme'],
-        'warning':    [
+        'attendance': [
+            'attendance', 'present', 'absent', 'percent', 'days', 'status', 'check',
             'risk', 'safe', 'dropout', 'fail', 'low attendance', 'alert', 'warning',
-            'below 75', 'below 65', 'attendance below', 'attendance less', 'attendance under',
-            'critical attendance', 'debarred', 'debarment', 'danger', 'very low attendance',
-            'poor attendance', 'attendance problem', 'attendance issue', 'attendance shortage',
-            'who has low', 'who is missing', 'who hasn', 'missing classes', 'attend more',
-            'classes must', 'how many classes', 'classes needed', 'to reach 75', 'to reach 65',
-            'attendance report', 'attendance statistics', 'attendance average', 'attendance distribution',
-            'worst attendance', 'lowest attendance', 'department attendance',
-            'predict risk', 'likely to fail', 'may fall below', 'skipped', 'behind', 'not meeting',
-            'notify', 'emails', 'inform', 'send notice', 'send alert',
+            'below 75', 'below 65', 'critical attendance', 'debarred', 'debarment', 'danger',
+            'poor attendance', 'attendance shortage', 'classes must', 'how many classes',
+            'classes needed', 'to reach 75', 'attendance statistics', 'attendance average',
+            'predict risk', 'may fall below', 'notify', 'emails', 'inform', 'send notice'
         ],
-        'attendance': ['attendance', 'present', 'absent', 'percent', 'days', 'status', 'check'],
         'exam': [
             'exam', 'exams', 'schedule', 'timetable', 'midterm', 'final',
             'reschedule', 'postpone', 'cancel', 'move', 'change', 'update',
@@ -135,7 +186,6 @@ class AgentRouter:
 
         # Dispatch to domain agent
         dispatch = {
-            'warning':     self.agent_warning,
             'student':     self.agent_student,
             'attendance':  self.agent_attendance,
             'exam':        self.agent_exam,
@@ -190,22 +240,27 @@ class AgentRouter:
         return ""
 
     def _detect_domain(self, msg_lower: str):
+        # Scoring logic for better precision
+        scores = {d: 0 for d in self.AGENT_KEYWORDS.keys()}
+        
         for domain, keywords in self.AGENT_KEYWORDS.items():
-            if any(kw in msg_lower for kw in keywords):
-                return domain
-        return None
+            for kw in keywords:
+                if kw in msg_lower:
+                    scores[domain] += (2 if kw in msg_lower.split() else 1)
+        
+        # Priority overrides
+        if 'attendance' in msg_lower and ('risk' in msg_lower or 'below' in msg_lower):
+            scores['warning'] += 3
+        if 'enroll' in msg_lower or 'register student' in msg_lower:
+            scores['student'] += 3
+        if 'create' in msg_lower and 'course' in msg_lower:
+            scores['course'] += 3
+            
+        best_domain = max(scores, key=scores.get)
+        return best_domain if scores[best_domain] > 0 else None
 
     def extract_roll_no(self, text: str):
-        roll_m = re.search(r'roll\s*(?:no|number)?[:\s\-]+([A-Za-z0-9]+)', text, re.IGNORECASE)
-        if roll_m:
-            return roll_m.group(1).upper()
-            
-        match = re.search(r'\b([A-Za-z]{2,4}\d{3,4})\b', text.upper())
-        if match:
-            return match.group(1)
-            
-        match_digits = re.search(r'\b(\d{4,6})\b', text)
-        return match_digits.group(1) if match_digits else None
+        return NLPEngine.extract_roll_no(text)
 
     # -----------------------------------------------------------------
     # Text-to-SQL-to-Text -- CampusAI Universal Query Engine
@@ -248,41 +303,45 @@ class AgentRouter:
              # Just the raw specialized prompt
              combined_prompt = message
         else:
-             # Standard general prompt
+             # Standard general prompt: High-Reliability Schema Injection
              schema = (
-                 "TABLE students_student: roll_no (PK/student_id), name, department, year, email, phone\n"
-                 "TABLE attendance_attendancerecord: id, roll_no (FK->students_student.roll_no), date, status ('present'/'absent')\n"
-                 "TABLE courses_course: id, name, code, department\n"
-                 "TABLE faculty_faculty: id, name, department, email\n"
-                 "TABLE exams_exam: id, exam_type, date, room\n"
-                 "JOIN syntax: JOIN students_student ON attendance_attendancerecord.roll_no = students_student.roll_no\n"
-                 "For attendance %: ROUND(100.0*SUM(CASE WHEN status='present' THEN 1 ELSE 0 END)/COUNT(*),1)\n"
+                 "UNIVERSITY DB SCHEMA:\n"
+                 "- students_student: roll_no (PK), name, department, year, email, phone, marks_12th, annual_income, caste\n"
+                 "- collections_attendancerecord: id, roll_no (FK), date, status ('present'/'absent')\n"
+                 "- courses_course: id, name, code, department, semester, credits, type ('Core'/'Elective')\n"
+                 "- exams_exam: id, course_id (FK), date, room, exam_type ('midterm'/'final'), start_time, end_time\n"
+                 "- exams_examresult: id, student_id (FK), exam_id (FK), marks, result_status ('Pass'/'Fail')\n"
+                 "- faculty_faculty: id, name, department, email, designation\n"
+                 "- scholarships_scholarshipscheme: id, name, eligibility_criteria (JSON), link\n"
+                 "- letters_letter: id, student_roll (FK), requested_by (FK), letter_type, purpose, content, status ('pending'/'approved')\n"
+                 "\n"
+                 "QUERY HINTS:\n"
+                 "- Attendance %: ROUND(100.0 * SUM(CASE WHEN status='present' THEN 1 ELSE 0 END) / COUNT(*), 1)\n"
+                 "- Pass Rate: 100.0 * COUNT(CASE WHEN marks >= 40 THEN 1 END) / COUNT(*)\n"
+                 "- Top Students: ORDER BY marks_12th DESC LIMIT 10\n"
              )
 
              role_restriction = ""
              if self.role == 'student':
                  user_roll = getattr(self.user, 'username', None) or getattr(self.user, 'roll_no', None)
                  role_restriction = (
-                     f"ROLE: Student (roll_no='{user_roll}'). "
-                     f"SQL must ONLY query data for roll_no='{user_roll}'. Never return other students' data."
+                     f"Current User (Student): roll_no='{user_roll}'. "
+                     f"STRICT SECURITY: You MUST filter all queries to only show data for roll_no '{user_roll}'. "
+                     f"Never expose other students' data."
                  )
              else:
-                 role_restriction = f"ROLE: {self.role.title()}. Full access to all records."
+                 role_restriction = f"Current User: Faculty/Admin (Full Access)."
 
-             # Single combined prompt: SQL + response template in one call
              combined_prompt = (
-                 "You are CampusAI for a College Management System.\n"
-                 f"SCHEMA:\n{schema}\n"
+                 "You are 'UniAgent AI', the intelligent brain of a University Management System.\n"
+                 "Use the SCHEMA below to answer the User Message.\n"
+                 f"{schema}\n"
                  f"{role_restriction}\n\n"
-                 "TASK: Given the user's message, do the following in ONE response:\n"
-                 "1. Write a SQLite SELECT query for the request.\n"
-                 "2. Write a friendly response template. Use {{RESULTS}} as a placeholder where the data will go.\n"
-                 "   If results are empty, write a polite 'not found' message instead.\n"
-                 "3. If the message is NOT a database query (e.g. 'hi', 'thanks'), set sql to null and put the reply in response.\n\n"
-                 "Return ONLY this raw JSON (no markdown, no code fences):\n"
-                 "{\"sql\": \"SELECT ...\", \"response\": \"Here is the info: {{RESULTS}}\"}\n"
-                 "  OR\n"
-                 "{\"sql\": null, \"response\": \"<conversational reply>\"}\n\n"
+                 "RULES:\n"
+                 "1. SQL: Write a valid SQLite SELECT query. If the request is for an action (enroll, mark), return sql: null.\n"
+                 "2. RESPONSE: Write a polite, professional markdown response. Use '{{RESULTS}}' where data will be injected.\n"
+                 "3. If no matching data is found, set response to a helpful 'Not found' message.\n"
+                 "4. Return ONLY JSON: {\"sql\": \"...\", \"response\": \"...\"}\n\n"
                  f"User Message: '{message}'"
              )
 
@@ -467,267 +526,7 @@ class AgentRouter:
     # -----------------------------------------------------------------
     # 1. WARNING / ATTENDANCE AGENT – Full NLP Coverage
     # -----------------------------------------------------------------
-    def agent_warning(self, message: str) -> str:
-        """Attendance Warning Agent with full NLP support for all query types."""
-        msg_lower = message.lower()
-
-        # --- Domain Security ---------------------------------------------
-        out_of_scope = {
-            'exam': 'Examination', 'schedule': 'Examination',
-            'salary': 'Faculty', 'enroll': 'Student Management',
-            'gpa': 'Student Management', 'scholarship': 'Scholarship',
-        }
-        for kw, agent in out_of_scope.items():
-            if kw in msg_lower and 'attendance' not in msg_lower:
-                return (
-                    f"⚠️ **Out of Scope:** This task belongs to the **{agent} Agent**.\n"
-                    f"I am the **Attendance Warning Agent** — I only handle attendance monitoring."
-                )
-
-        # --- Helpers ---------------------------------------------------------
-        DEPT_PATTERN = r'\b(CS|CSE|IT|ECE|EEE|MECH|CIVIL|AI|DS)\b'
-        dept_m = re.search(DEPT_PATTERN, message.upper())
-        dept = dept_m.group(1) if dept_m else None
-        if dept == 'CSE': dept = 'CS'
-
-        roll = self.extract_roll_no(message)
-
-        # Threshold extraction  e.g. "below 70%" or "less than 65"
-        thresh_m = re.search(r'(?:below|less\s+than|under|<)\s*(\d+(?:\.\d+)?)\s*%?', msg_lower)
-        threshold = float(thresh_m.group(1)) if thresh_m else 75.0
-        # Override for "critical" queries → 65%
-        if any(kw in msg_lower for kw in ['critical', 'very low', 'extremely low', 'debarred', 'debarment', 'danger', 'serious', 'high-risk', 'far below']):
-            threshold = 65.0
-
-        def _get_pct(student):
-            recs = AttendanceRecord.objects.filter(roll_no=student)
-            total = recs.count()
-            if total == 0:
-                return None, 0, 0
-            present = recs.filter(status='present').count()
-            return round(present / total * 100, 1), present, total
-
-        def _status_badge(pct):
-            if pct < 65: return '🔴 CRITICAL'
-            if pct < 75: return '🟡 WARNING'
-            return '🟢 SAFE'
-
-        def _classes_needed(present, total, target_pct=75.0):
-            """Classes needed to cross target_pct%."""
-            if total == 0: return 0
-            curr_pct = present / total * 100
-            if curr_pct >= target_pct: return 0
-            return max(0, int((target_pct / 100 * total - present) / (1 - target_pct / 100)) + 1)
-
-        # ─── 0. NOTIFICATIONS / ACTIONS ───────────────────────────────────
-        if any(kw in msg_lower for kw in ['send', 'notify', 'alert email', 'inform']):
-            qs = Student.objects.all()
-            if dept: qs = qs.filter(department__iexact=dept)
-            count = 0
-            for s in qs:
-                pct, _, _ = _get_pct(s)
-                if pct is not None and pct < threshold:
-                    count += 1
-            if count == 0:
-                return f"✅ **No notifications sent.** All students{' in ' + dept if dept else ''} are above {threshold}%."
-            return (
-                f"📧 **Action Executed: Automated Notifications Sent**\n"
-                f"- **Recipients:** {count} students{' in ' + dept if dept else ''} (Attendance < {threshold}%)\n"
-                f"- **CC'd:** HOD, Faculty Advisors, and Parents/Guardians\n"
-                f"- **Message:** Formal warning regarding university attendance policies and examination debarment risk."
-            )
-
-        # ─── 1. EARLY WARNING / PREDICTION (Students 75-82%) ──────────────
-        if any(kw in msg_lower for kw in ['predict', 'soon', 'close to', 'dropping', 'early warning', 'likely to']):
-            qs = Student.objects.all()
-            if dept: qs = qs.filter(department__iexact=dept)
-            at_risk_soon = []
-            for s in qs:
-                pct, pre, tot = _get_pct(s)
-                if pct is not None and 75.0 <= pct <= 82.0:
-                    at_risk_soon.append((s, pct, pre, tot))
-            
-            at_risk_soon.sort(key=lambda x: x[1])
-            if not at_risk_soon:
-                return "✅ **No students currently in the early-warning zone (75-82%).**"
-            
-            lines = [f"⚠️ **{s.name}** ({s.roll_no}) — **{pct}%** (Could fall below 75% if absent {max(1, int(pre / 0.75) - tot)} more times)" for s, pct, pre, tot in at_risk_soon]
-            top_lines = "\n".join(lines[:15])
-            heading = f"🔮 **Attendance Prediction & Early Warning**\nFound **{len(at_risk_soon)} students** hovering near the 75% edge:\n"
-            return heading + top_lines
-
-        # ─── 2. STUDENT-SPECIFIC REPORT ───────────────────────────────────
-        # Try to extract name if no roll provided
-        if not roll:
-            name_m = re.search(r'(?:for|of|student|check|about)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)', message)
-            if name_m and len(name_m.group(1).strip()) > 2 and name_m.group(1).strip().lower() not in ['student', 'students', 'all', 'attendance', 'every', 'each', 'average', 'department']:
-                name_query = name_m.group(1).strip()
-                qs = Student.objects.filter(name__icontains=name_query)
-                if qs.count() == 1:
-                    roll = qs.first().roll_no
-                elif qs.count() > 1:
-                    return f"Found multiple students matching '{name_query}'. Please provide a Roll Number."
-
-        if roll:
-            try:
-                student = Student.objects.get(roll_no=roll.upper())
-                pct, present, total = _get_pct(student)
-                if pct is None:
-                    return f"📋 No attendance records found for **{student.name}** ({roll.upper()})."
-
-                needed = _classes_needed(present, total)
-                badge = _status_badge(pct)
-                bar_filled = int(pct / 5)
-                bar = '█' * bar_filled + '░' * (20 - bar_filled)
-
-                recent = AttendanceRecord.objects.filter(roll_no=student).order_by('-date')[:7]
-                recent_log = "\n".join([f"  - {r.date}: {'✅' if r.status=='present' else '❌'} {r.status.title()}" for r in recent])
-
-                out = (
-                    f"📊 **Attendance Report: {student.name} ({roll.upper()})**\n"
-                    f"- **Dept:** {student.department or 'N/A'} | **Year:** {student.year or 'N/A'}\n"
-                    f"- **Present:** {present} / {total} days\n"
-                    f"- **Attendance:** `{bar}` **{pct}%**\n"
-                    f"- **Status:** {badge}\n"
-                )
-                if needed:
-                    out += f"- ⚠️ Must attend **{needed} more consecutive classes** to reach 75%\n"
-                if recent_log:
-                    out += f"\n**Last {recent.count()} Records:**\n{recent_log}"
-                return out
-            except Student.DoesNotExist:
-                return f"❌ Student **{roll.upper()}** not found."
-
-        # ─── 3. PREDICTION "How many classes must X attend?" ──────────────
-        if any(kw in msg_lower for kw in ['how many classes', 'classes must', 'need to attend', 'classes needed', 'to reach', 'more classes does', 'attendance gap', 'recovery plan', 'fix attendance']):
-            name_m = re.search(r'(?:must|for|student|about|does|of)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)', message)
-            if not name_m:
-                 # fallback to finding the first Capitalized word that isn't the first word
-                 name_m = re.search(r'(?<!^)\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b', message)
-            target_m = re.search(r'(?:reach|above|to)\s+([\d.]+)%?', msg_lower)
-            target = float(target_m.group(1)) if target_m else 75.0
-            
-            s = None
-            if roll:
-                qs = Student.objects.filter(roll_no=roll.upper())
-                if qs.exists(): s = qs.first()
-            elif name_m:
-                name = name_m.group(1).strip()
-                if name.lower() not in ['student', 'students', 'all', 'attendance', 'department']:
-                    qs = Student.objects.filter(name__icontains=name)
-                    if qs.exists(): s = qs.first()
-                    
-            if s:
-                pct, present, total = _get_pct(s)
-                if pct is None:
-                    return f"No data for **{s.name}**."
-                needed = _classes_needed(present, total, target)
-                if needed == 0:
-                    return f"✅ **{s.name}** already has **{pct}%** attendance — above {target}%. No extra classes needed!"
-                return (
-                    f"🔢 **{s.name}** currently has **{pct}%** attendance ({present}/{total} days).\n"
-                    f"To reach **{target}%**, they must attend the next **{needed} consecutive classes**."
-                )
-            return "⚠️ Please include a student name or roll number: *How many classes must Rahul attend to reach 75%?*"
-
-        # ─── 3. AVERAGE / STATISTICS ──────────────────────────────────────
-        if any(kw in msg_lower for kw in ['average', 'avg', 'statistics', 'stats', 'distribution', 'which department', 'lowest', 'worst']):
-            qs = Student.objects.all()
-            if dept: qs = qs.filter(department__iexact=dept)
-
-            dept_stats = {}
-            total_pcts = []
-            for s in qs:
-                pct, _, _ = _get_pct(s)
-                if pct is None: continue
-                total_pcts.append(pct)
-                d = s.department or 'Unknown'
-                if d not in dept_stats:
-                    dept_stats[d] = []
-                dept_stats[d].append(pct)
-
-            if not total_pcts:
-                return "⚠️ No attendance records found."
-
-            # Average for a specific dept
-            if dept and 'average' in msg_lower:
-                dept_pcts = dept_stats.get(dept, [])
-                if not dept_pcts:
-                    return f"No attendance data for {dept} department."
-                avg = sum(dept_pcts) / len(dept_pcts)
-                return f"📊 Average attendance in **{dept}** department: **{avg:.1f}%** ({len(dept_pcts)} students tracked)"
-
-            # Overall average / statistics
-            if any(kw in msg_lower for kw in ['average', 'avg', 'statistics', 'stats', 'performance summary']):
-                overall_avg = sum(total_pcts) / len(total_pcts)
-                return (
-                    f"📊 **University Attendance Statistics:**\n"
-                    f"- Overall Average: **{overall_avg:.1f}%**\n"
-                    f"- Students tracked: {len(total_pcts)}\n"
-                    f"- Below 75%: **{sum(1 for p in total_pcts if p < 75)}**\n"
-                    f"- Below 65% (Critical): **{sum(1 for p in total_pcts if p < 65)}**"
-                )
-
-            # Department distribution / worst department
-            dept_avgs = [(d, round(sum(pts)/len(pts), 1), len(pts)) for d, pts in dept_stats.items()]
-            dept_avgs.sort(key=lambda x: x[1])
-            lines = [f"- **{d}**: {avg}% avg | {n} students" for d, avg, n in dept_avgs]
-            heading = "🏆 Department with lowest attendance: **{}** ({:.1f}%)\n\n".format(
-                dept_avgs[0][0], dept_avgs[0][1]) if dept_avgs else ""
-            return heading + "📊 **Attendance by Department:**\n" + "\n".join(lines)
-
-        # ─── 4. COUNT QUERIES ─────────────────────────────────────────────
-        if any(kw in msg_lower for kw in ['how many', 'count', 'number of']):
-            qs = Student.objects.all()
-            if dept: qs = qs.filter(department__iexact=dept)
-            count = 0
-            for s in qs:
-                pct, _, _ = _get_pct(s)
-                if pct is not None and pct < threshold:
-                    count += 1
-            scope = f" in {dept}" if dept else ""
-            return f"📊 **{count} student(s)**{scope} have attendance below **{threshold}%**."
-
-        # ─── 5. WARNING LIST (default: below 75% or user-specified threshold) ─
-        at_risk = []
-        qs = Student.objects.all()
-        if dept: qs = qs.filter(department__iexact=dept)
-
-        for s in qs:
-            pct, present, total = _get_pct(s)
-            if pct is None or pct >= threshold:
-                continue
-            needed = _classes_needed(present, total)
-            at_risk.append({
-                'name': s.name, 'roll': s.roll_no, 'dept': s.department or '?',
-                'pct': pct, 'present': present, 'total': total, 'needed': needed,
-            })
-
-        at_risk.sort(key=lambda x: x['pct'])
-
-        if not at_risk:
-            dept_str = f" in {dept}" if dept else ""
-            return f"✅ **All students{dept_str} are above {threshold}% attendance.** No warnings needed!"
-
-        lines = []
-        for r in at_risk[:25]:
-            badge = '🔴' if r['pct'] < 65 else '🟡'
-            status_txt = 'CRITICAL' if r['pct'] < 65 else 'WARNING'
-            lines.append(
-                f"{badge} **{r['name']}** ({r['roll']}) | {r['dept']} | "
-                f"**{r['pct']}%** [{status_txt}] | needs {r['needed']} more classes"
-            )
-
-        dept_header = f" in **{dept}**" if dept else ""
-        critical = sum(1 for r in at_risk if r['pct'] < 65)
-        warning = len(at_risk) - critical
-        heading = (
-            f"⚠️ **{len(at_risk)} Students At Risk{dept_header}** "
-            f"(below {threshold}%): {critical} Critical | {warning} Warning\n"
-        )
-        if len(at_risk) > 25:
-            heading += f"*(showing first 25 of {len(at_risk)})*\n"
-        return heading + "\n".join(lines)
+    # agent_warning was consolidated into agent_attendance
 
     # -----------------------------------------------------------------
     # 2. STUDENT AGENT – Full NLP Coverage
@@ -760,30 +559,14 @@ class AgentRouter:
                 )
 
         # --- Helpers ----------------------------------------------------------
-        DEPT_PATTERN = r'\b(CS|CSE|IT|ECE|EEE|MECH|CIVIL|AI|DATA\s*SCIENCE|DS|ELECTRONICS)\b'
-        YEAR_PATTERN = r'\b(1|2|3|4)(?:st|nd|rd|th)?\s*year\b|\b(first|second|third|fourth|final)\s*year\b'
-        GPA_GT_PATTERN = r'gpa\s+(?:above|greater\s+than|higher\s+than|>|>=)\s*(\d+(?:\.\d+)?)'
-        GPA_LT_PATTERN = r'gpa\s+(?:below|less\s+than|lower\s+than|<|<=)\s*(\d+(?:\.\d+)?)'
-        GPA_BETWEEN_PATTERN = r'gpa\s+between\s+(\d+(?:\.\d+)?)\s+and\s+(\d+(?:\.\d+)?)'
-        JOIN_YEAR_PATTERN = r'(?:joined?\s+in|batch|admitted?\s+in|from)\s+(20\d{2})'
+        dept = NLPEngine.extract_dept(message)
 
-        dept_m = re.search(DEPT_PATTERN, message.upper())
-        dept = dept_m.group(1).replace(' ', '') if dept_m else None
-        if dept == 'CSE': dept = 'CS'
+        year = NLPEngine.extract_year(message)
 
-        year_m = re.search(YEAR_PATTERN, msg_lower)
-        if year_m:
-            yr_map = {'first': 1, 'second': 2, 'third': 3, 'fourth': 4, 'final': 4}
-            year = yr_map.get(year_m.group(2), year_m.group(1))
-        else:
-            year = None
-
-        join_year_m = re.search(JOIN_YEAR_PATTERN, msg_lower)
+        join_year_m = re.search(r'(?:joined?\s+in|batch|admitted?\s+in|from)\s+(20\d{2})', msg_lower)
         join_year = int(join_year_m.group(1)) if join_year_m else None
 
-        gpa_gt_m = re.search(GPA_GT_PATTERN, msg_lower)
-        gpa_lt_m = re.search(GPA_LT_PATTERN, msg_lower)
-        gpa_bw_m = re.search(GPA_BETWEEN_PATTERN, msg_lower)
+        gpa_f = NLPEngine.extract_gpa_filters(message)
 
         roll = self.extract_roll_no(message)
 
@@ -810,33 +593,25 @@ class AgentRouter:
             )
 
         # --- 3. ENROLL / ADMIT -----------------------------------------------
-        if any(kw in msg_lower for kw in ['enroll', 'add', 'admit', 'register', 'create', 'new', 'student name']):
-            # Keep commas to help bound the name match
-            name_m = re.search(r'(?:student\s+name|name\s+is|name|student|called|for)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)', message, re.IGNORECASE)
+        if any(kw in msg_lower for kw in ['enroll', 'add', 'admit', 'register', 'create', 'new']):
+            # Smarter Name Extraction
+            name_m = re.search(r'(?:student\s+name|name\s+is|named?|called)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)', message)
             if not name_m:
-                name_m = re.search(r'(?:enroll|add|admit|register)\s+(?:new\s+)?(?:a\s+)?(?:student\s+)?(?:named?\s+)?([a-zA-Z]+(?:\s+[a-zA-Z]+)?)', message, re.IGNORECASE)
+                # Fallback: look for capitalized words after "enroll" or "add"
+                name_m = re.search(r'(?:enroll|add|admit|register)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)', message)
             
             student_name = name_m.group(1).strip().title() if name_m else None
-            if student_name and student_name.lower() in ['student', 'a', 'the', 'named', 'name', 'is', 'for']: 
-                student_name = None
-
-            roll_gen_m = re.search(r'roll\s*(?:no|number)?[:\s\-]+([a-zA-Z0-9]+)', message, re.IGNORECASE)
-            if not roll_gen_m:
-                roll_gen_m = re.search(r'\b([a-zA-Z]{2,4}\d{3,4})\b', message, re.IGNORECASE)
             
-            new_roll = roll_gen_m.group(1).upper() if roll_gen_m else roll
-
-            if student_name and re.search(DEPT_PATTERN, student_name.upper()):
-                student_name = student_name.split()[0]
-                
+            # Clean up: stop if we hit keywords
             if student_name:
-                student_name = re.sub(r'(?i)\b(to|in|age|caste|department|dpartment)\b.*', '', student_name).strip()
+                student_name = re.split(r'\b(in|to|from|dept|department|with|roll|batch|year)\b', student_name, flags=re.IGNORECASE)[0].strip()
 
+            new_roll = self.extract_roll_no(message)
+            
             yr_enroll_m = re.search(r'\b(20\d{2})\b', message)
             enroll_join_year = int(yr_enroll_m.group(1)) if yr_enroll_m else None
 
-            yr_academic_m = re.search(r'\b(1|2|3|4)(?:st|nd|rd|th)?\s*year\b', msg_lower)
-            enroll_year = int(yr_academic_m.group(1)) if yr_academic_m else 1
+            enroll_year = year or 1
 
             if student_name and dept and new_roll:
                 try:
@@ -964,12 +739,12 @@ class AgentRouter:
             if join_year: qs = qs.filter(join_year=join_year)
 
             # GPA filters
-            if gpa_bw_m:
-                qs = qs.filter(gpa__gte=float(gpa_bw_m.group(1)), gpa__lte=float(gpa_bw_m.group(2)))
-            elif gpa_gt_m:
-                qs = qs.filter(gpa__gt=float(gpa_gt_m.group(1)))
-            elif gpa_lt_m:
-                qs = qs.filter(gpa__lt=float(gpa_lt_m.group(1)))
+            if gpa_f['bw']:
+                qs = qs.filter(gpa__gte=gpa_f['bw'][0], gpa__lte=gpa_f['bw'][1])
+            elif gpa_f['gt']:
+                qs = qs.filter(gpa__gt=gpa_f['gt'])
+            elif gpa_f['lt']:
+                qs = qs.filter(gpa__lt=gpa_f['lt'])
 
             # Name search
             name_search_m = re.search(r'(?:find|search|named?|called)\s+(?:student\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)', message)
@@ -998,9 +773,9 @@ class AgentRouter:
             if dept: conditions.append(f"Dept: {dept}")
             if year: conditions.append(f"Year: {year}")
             if join_year: conditions.append(f"Joined: {join_year}")
-            if gpa_gt_m: conditions.append(f"GPA > {gpa_gt_m.group(1)}")
-            if gpa_lt_m: conditions.append(f"GPA < {gpa_lt_m.group(1)}")
-            if gpa_bw_m: conditions.append(f"GPA {gpa_bw_m.group(1)}-{gpa_bw_m.group(2)}")
+            if gpa_f['gt']: conditions.append(f"GPA > {gpa_f['gt']}")
+            if gpa_f['lt']: conditions.append(f"GPA < {gpa_f['lt']}")
+            if gpa_f['bw']: conditions.append(f"GPA {gpa_f['bw'][0]}-{gpa_f['bw'][1]}")
             cond_str = " | ".join(conditions)
 
             heading = f"**Found {total} Student(s)**" + (f" [{cond_str}]" if cond_str else "")
@@ -1046,255 +821,160 @@ class AgentRouter:
         )
 
     # -----------------------------------------------------------------
-    # 3. ATTENDANCE AGENT
+    # 2. ATTENDANCE & WARNING AGENT – Full NLP Coverage
     # -----------------------------------------------------------------
     def agent_attendance(self, message: str) -> str:
-        msg = message.lower()
+        """Unified Attendance & Warning Agent."""
+        msg_lower = message.lower()
         roll = self.extract_roll_no(message)
+        dept = NLPEngine.extract_dept(message)
+        year = NLPEngine.extract_year(message)
+        
+        # Threshold extraction
+        thresh_m = re.search(r'(?:below|less|under|<)\s*(\d+(?:\.\d+)?)\s*%?', msg_lower)
+        threshold = float(thresh_m.group(1)) if thresh_m else 75.0
 
-        # Mark attendance
-        if ('mark' in msg or 'present' in msg or 'absent' in msg) and roll and self.role == 'teacher':
-            status_val = 'absent' if 'absent' in msg else 'present'
-            try:
-                student = Student.objects.get(roll_no=roll)
-                today = date.today()
-                record, created = AttendanceRecord.objects.get_or_create(
-                    roll_no=student, date=today,
-                    defaults={'status': status_val}
-                )
-                if not created:
-                    record.status = status_val
-                    record.save()
-                records = AttendanceRecord.objects.filter(roll_no=student)
-                total = records.count()
-                present = records.filter(status='present').count()
-                pct = (present / total * 100) if total else 0
-                return f"[Check] **{student.name}** marked **{status_val.upper()}** today.\nCurrent attendance: {pct:.1f}% ({present}/{total})"
-            except Student.DoesNotExist:
-                return f"Student {roll} not found."
+        def _get_pct(student):
+            recs = AttendanceRecord.objects.filter(roll_no=student)
+            tot = recs.count()
+            if tot == 0: return None, 0, 0
+            pre = recs.filter(status='present').count()
+            return round(pre / tot * 100, 1), pre, tot
 
-        # View attendance for a student
+        def _classes_needed(pre, tot, target=75.0):
+            if tot == 0: return 0
+            if (pre/tot*100) >= target: return 0
+            return int((target/100 * tot - pre) / (1 - target/100)) + 1
+
+        # ─── 1. INDIVIDUAL STUDENT REPORT (Highest Priority) ────────────────
         if roll:
             try:
-                student = Student.objects.get(roll_no=roll)
-                records = AttendanceRecord.objects.filter(roll_no=student).order_by('-date')
-                total = records.count()
-                present = records.filter(status='present').count()
-                pct = (present / total * 100) if total else 0
-                recent = records[:7]
-                log = "\n".join([f"  - {r.date}: {r.status.upper()}" for r in recent])
+                s = Student.objects.get(roll_no=roll)
+                pct, pre, tot = _get_pct(s)
+                
+                # A. Mark Attendance
+                if any(kw in msg_lower for kw in ['mark', 'present', 'absent']):
+                    if self.role != 'teacher': return "🔒 Only faculty can mark attendance."
+                    status_val = 'absent' if 'absent' in msg_lower else 'present'
+                    AttendanceRecord.objects.update_or_create(roll_no=s, date=date.today(), defaults={'status': status_val})
+                    pct, pre, tot = _get_pct(s)
+                    return f"✅ **{s.name}** ({roll}) marked **{status_val.upper()}** today. Total: **{pct}%** ({pre}/{tot})"
+                
+                # B. Prediction / Classes Needed
+                if any(kw in msg_lower for kw in ['how many classes', 'needed', 'prediction', 'reach']):
+                    needed = _classes_needed(pre, tot, threshold)
+                    if needed <= 0: return f"✅ **{s.name}** is safe at **{pct}%**."
+                    return f"🔢 **{s.name}** ({pct}%) needs **{needed} more classes** to reach {threshold}%."
+                
+                # C. General Status
                 return (
-                    f"[Clipboard] **Attendance: {student.name} ({roll})**\n"
-                    f"- Total: {total} days | Present: {present} | Absent: {total - present}\n"
-                    f"- Percentage: **{pct:.1f}%**\n\n"
-                    f"**Last 7 days:**\n{log}"
+                    f"📊 **Attendance Certificate for {s.name} ({roll}):**\n"
+                    f"- Status: **{'🟢 Safe' if pct >= 75 else '🔴 At Risk'}**\n"
+                    f"- Percentage: **{pct}%**\n"
+                    f"- Present: **{pre} days** / Total: **{tot} days**"
                 )
             except Student.DoesNotExist:
-                return f"Student {roll} not found."
+                return f"❌ Student {roll} not found."
 
-        # Low attendance list
-        threshold = 75
-        low = []
-        for s in Student.objects.all():
-            recs = AttendanceRecord.objects.filter(roll_no=s)
-            total = recs.count()
-            if total > 0:
-                pct = recs.filter(status='present').count() / total * 100
-                if pct < threshold:
-                    low.append(f"- {s.name} ({s.roll_no}): {pct:.1f}%")
-        if low:
-            return f"[Warning] **Students Below {threshold}%:**\n" + "\n".join(low)
-        return "All students are above the attendance threshold."
+        # ─── 2. AGGREGATE QUERIES (Teacher only for sensitive lists) ─────────
+        if any(kw in msg_lower for kw in ['risk', 'below', 'low', 'who']):
+            qs = Student.objects.all()
+            if dept: qs = qs.filter(department=dept)
+            if year: qs = qs.filter(year=year)
+            
+            at_risk = []
+            for s in qs:
+                pct, pre, tot = _get_pct(s)
+                if pct is not None and pct < threshold:
+                    at_risk.append(f"- **{s.name}** ({s.roll_no}): **{pct}%**")
+            
+            if not at_risk: return f"✅ All students are above {threshold}%."
+            return f"🚨 **Attendance Warning List (Below {threshold}%):**\n" + "\n".join(at_risk[:15])
 
-    # -----------------------------------------------------------------
+        return "📋 **Attendance Agent**: Try 'Check CS1001' or 'Show IT students below 75%'."
+
+        # F. STATISTICS
+        if any(kw in msg_lower for kw in ['stats', 'average', 'avg', 'summary']):
+            qs = Student.objects.all()
+            if dept: qs = qs.filter(department=dept)
+            pcts = [p for p in [_get_pct(s)[0] for s in qs] if p is not None]
+            if not pcts: return "⚠️ No attendance data found."
+            avg = sum(pcts)/len(pcts)
+            return f"📊 **Attendance Stats{' for ' + dept if dept else ''}:**\n- Avg: {avg:.1f}%\n- Below 75%: {sum(1 for p in pcts if p < 75)}"
+
+        return "📋 **Attendance Agent**: Try 'Show students below 75%' or 'How many classes does CS1001 need?'"
+
+    # --------------------------------------------------------    # -----------------------------------------------------------------
     # 4. EXAM SCHEDULER AGENT – Full NLP Coverage
     # -----------------------------------------------------------------
     def agent_exam(self, message: str) -> str:
         """Exam Scheduler Agent handling scheduling, conflicts, rescheduling, and timeline viewing."""
         msg_lower = message.lower()
+        dept = NLPEngine.extract_dept(message)
+        semester = NLPEngine.extract_year(message) # Proxy for year/semester filter
 
-        # --- Domain Security ---------------------------------------------
-        out_of_scope = {
-            'attendance': 'Attendance Warning', 'present': 'Attendance Warning',
-            'student enroll': 'Student Management', 'gpa': 'Student Management',
-            'scholarship': 'Scholarship', 'salary': 'Faculty'
-        }
-        for kw, agent in out_of_scope.items():
-            if kw in msg_lower and 'exam' not in msg_lower:
-                return f"⚠️ **Out of Scope:** This task belongs to the **{agent} Agent**. I am the **Exam Scheduler Agent**."
+        # Extractor for course name
+        course_name = None
+        course_m = re.search(r'(?:for|of|exam|on|in)\s+([A-Z][a-zA-Z\s]+?)(?=\s+(?:exam|on|at|in|dept|sem|semester|$))', message)
+        if course_m and len(course_m.group(1).strip()) > 3:
+            course_name = course_m.group(1).strip()
 
-        # --- Helpers ---------------------------------------------------------
-        DEPT_PATTERN = r'\b(CS|CSE|IT|ECE|EEE|MECH|CIVIL|AI|DS)\b'
-        dept_m = re.search(DEPT_PATTERN, message.upper())
-        dept = dept_m.group(1) if dept_m else None
-        if dept == 'CSE': dept = 'CS'
-
-        sem_m = re.search(r'semester\s*(\d+)', msg_lower)
-        semester = int(sem_m.group(1)) if sem_m else None
-
-        # Parse relative dates (simplified for hackathon demo)
+        # Date extraction
         target_date = None
-        now = date.today()
-        if 'tomorrow' in msg_lower:
-            target_date = now + timedelta(days=1)
-        elif 'today' in msg_lower:
-            target_date = now
-        elif 'next week' in msg_lower:
-            target_date = now + timedelta(days=7) # rough proxy
-        elif 'next month' in msg_lower:
-            target_date = now + timedelta(days=30)
-            
-        # Parse explicit dates (e.g., April 10, April 15)
-        date_m = re.search(r'(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|aug|sept|oct|nov|dec)\s+(\d{1,2})', msg_lower)
-        if date_m:
-            month_str, day_str = date_m.groups()
-            try:
-                # Basic parsing, assume current year
-                dt = datetime.strptime(f"{month_str} {day_str} {now.year}", "%B %d %Y")
-                target_date = dt.date()
-            except ValueError:
-                try: 
-                    dt = datetime.strptime(f"{month_str} {day_str} {now.year}", "%b %d %Y")
-                    target_date = dt.date()
-                except ValueError: pass
-
-        # Parse Course Name (e.g. "for Data Structures", "Mathematics exam")
-        course_m = re.search(r'(?:for|course|subject)\s+([A-Z][a-zA-Z\s]+)(?:\s+exam|\s+course)?', message)
-        if not course_m: 
-             course_m = re.search(r'([A-Z][a-zA-Z\s]+)\s+exam', message)
-        course_name = course_m.group(1).strip() if course_m else None
-        # Clean up common false positives
-        if course_name and course_name.lower() in ['the', 'an', 'midterm', 'final', 'upcoming', 'semester']: course_name = None
+        if 'tomorrow' in msg_lower: target_date = date.today() + timedelta(days=1)
+        elif 'next week' in msg_lower: target_date = date.today() + timedelta(days=7)
+        else:
+            date_m = re.search(r'\b(\d{1,2}(?:st|nd|rd|th)?\s*(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*)\b', message, re.IGNORECASE)
+            if date_m:
+                 # Simplified date parsing for now
+                 pass
 
         # ─── 1. CONFLICT CHECKING ─────────────────────────────────────────
-        if any(kw in msg_lower for kw in ['conflict', 'clash', 'overlap', 'same day', 'same time', 'errors', 'issues']):
+        if any(kw in msg_lower for kw in ['conflict', 'clash', 'overlap']):
             exams = Exam.objects.all()
-            if semester: exams = exams.filter(course__semester=semester)
+            if semester: exams = exams.filter(course__semester__in=[2*semester-1, 2*semester])
             
-            # Group by Date & Dept/Semester
             conflicts = []
             exams_list = list(exams.select_related('course'))
             for i in range(len(exams_list)):
                 for j in range(i + 1, len(exams_list)):
                     e1, e2 = exams_list[i], exams_list[j]
                     if e1.date == e2.date:
-                        # If time is specified and overlaps, or if no time is specified but same date/dept/sem
-                        time_overlap = False
-                        if e1.start_time and e1.end_time and e2.start_time and e2.end_time:
-                            time_overlap = (e1.start_time < e2.end_time and e2.start_time < e1.end_time)
-                        
                         student_clash = (e1.course.department == e2.course.department and e1.course.semester == e2.course.semester)
-                        room_clash = (e1.room and e2.room and e1.room == e2.room and time_overlap)
-                        
-                        if student_clash or room_clash or (time_overlap and student_clash):
-                            reason = "Same Dept & Semester on same day"
-                            if time_overlap: reason += " (Time Overlap!)"
-                            if room_clash: reason = "Room Double Booking"
-                            conflicts.append((e1, e2, reason))
+                        if student_clash: conflicts.append((e1, e2))
 
-            if not conflicts:
-                return f"✅ **No exam conflicts detected** {'for Semester ' + str(semester) if semester else 'in the current schedule'}."
-            
-            lines = [f"⚠️ **{e1.course.name}** and **{e2.course.name}** ({e1.date}) — {r}" for e1, e2, r in conflicts]
-            return f"🚨 **Exam Conflicts Detected ({len(conflicts)}):**\n" + "\n".join(lines[:10])
+            if not conflicts: return "✅ No exam conflicts detected in the current schedule."
+            lines = [f"⚠️ **{e1.course.name}** and **{e2.course.name}** overlap on **{e1.date}**." for e1, e2 in conflicts]
+            return "🚨 **Exam Conflicts Detected:**\n" + "\n".join(lines[:10])
 
-        # ─── 2. DELETE / CANCEL EXAM ──────────────────────────────────────
-        if any(kw in msg_lower for kw in ['cancel', 'delete', 'remove']):
-            qs = Exam.objects.all()
-            if course_name: qs = qs.filter(course__name__icontains=course_name)
-            if target_date: qs = qs.filter(date=target_date)
-            if semester: qs = qs.filter(course__semester=semester)
+        # ─── 2. VIEW TIMETABLE ────────────────────────────────────────────
+        if any(kw in msg_lower for kw in ['timetable', 'schedule', 'upcoming', 'when is']):
+            qs = Exam.objects.select_related('course').all().order_by('date')
             if dept: qs = qs.filter(course__department=dept)
+            if semester: qs = qs.filter(course__semester__in=[2*semester-1, 2*semester])
+            
+            if not qs.exists(): return f"📅 No exams scheduled{' for ' + dept if dept else ''}."
+            
+            lines = []
+            for e in qs[:15]:
+                lines.append(f"- **{e.date.strftime('%b %d')}** | **{e.course.name}** ({e.course.department} Sem {e.course.semester})")
+            
+            return f"📅 **Upcoming Exam Timetable{' for ' + dept if dept else ''}:**\n" + "\n".join(lines)
 
-            count = qs.count()
-            if count == 0:
-                return "❌ Could not find any matching exams to cancel. Please be more specific (e.g., 'Cancel the Mathematics exam')."
-            elif count > 5 and not target_date and not course_name: # Safety
-                return f"⚠️ Found {count} exams matching that request. Please be more specific to avoid accidentally deleting the whole timetable."
-            
-            deleted_info = [f"- {e.course.name} ({e.date})" for e in qs]
-            qs.delete()
-            return f"🗑️ **Successfully Cancelled Exams:**\n" + "\n".join(deleted_info)
+        # ─── 3. RESCHEDULE / CANCEL / CREATE (Teachers Only) ──────────────
+        if self.role != 'teacher' and any(kw in msg_lower for kw in ['create', 'reschedule', 'cancel', 'move', 'delete']):
+            return "🔒 Access Denied: Exam modifications are restricted to faculty."
 
-        # ─── 3. UPDATE / RESCHEDULE EXAM ──────────────────────────────────
-        if any(kw in msg_lower for kw in ['move', 'change', 'reschedule', 'postpone', 'update', 'shift', 'adjust']):
-            qs = Exam.objects.all()
-            if course_name: qs = qs.filter(course__name__icontains=course_name)
-            
-            if not qs.exists():
-                return f"❌ Could not find an exam schedule for **{course_name or 'the specified course'}** to reschedule."
-            
-            exam = qs.first()
-            old_date = exam.date
-            
-            # Simple day shifting parser
-            days_shift = 0
-            if 'tomorrow' in msg_lower: days_shift = 1
-            elif 'next week' in msg_lower: days_shift = 7
-            elif 'two days' in msg_lower: days_shift = 2
-            
-            if days_shift > 0:
-                exam.date = date.today() + timedelta(days=days_shift)
-            elif target_date:
-                exam.date = target_date
-            elif 'monday' in msg_lower: # basic day-of-week parsing fallback
-                # Just mock a future date for the demo
-                exam.date = date.today() + timedelta(days=(7 - date.today().weekday()) % 7 + 0) # Next Monday
-            
-            if exam.date == old_date:
-                return f"📝 Found **{exam.course.name}** exam, but couldn't determine the new date. Please try: *'Move Mathematics exam to April 15'*."
-                
-            exam.save()
-            return f"🔄 **Exam Rescheduled Successfully:**\n**Course:** {exam.course.name}\n**Old Date:** {old_date}\n**New Date:** {exam.date}"
+        if any(kw in msg_lower for kw in ['cancel', 'delete']) and course_name:
+            e = Exam.objects.filter(course__name__icontains=course_name).first()
+            if e:
+                name = e.course.name
+                e.delete()
+                return f"🗑️ Exam for **{name}** has been cancelled."
+            return f"❌ No exam found for {course_name}."
 
-        # ─── 4. CREATE EXAM SCHEDULE ──────────────────────────────────────
-        if any(kw in msg_lower for kw in ['create', 'schedule', 'add', 'plan', 'arrange', 'set up']):
-            # Filter courses
-            courses = Course.objects.all()
-            if semester: courses = courses.filter(semester=semester)
-            if dept: courses = courses.filter(department__iexact=dept)
-            if course_name: courses = courses.filter(name__icontains=course_name)
-            
-            if not courses.exists():
-                return "❌ Could not find matching courses to schedule. Ensure the department or semester exists."
+        return "📅 **Exam Agent**: Try 'Show CS timetable' or 'Check for conflicts'."
 
-            start_dt = target_date or (date.today() + timedelta(days=14)) # default to 2 weeks out
-            
-            created = []
-            for i, c in enumerate(courses):
-                exam_date = start_dt + timedelta(days=i*2) # Space them out by 2 days
-                Exam.objects.create(
-                    course=c, 
-                    exam_type='midterm' if 'midterm' in msg_lower else 'final',
-                    date=exam_date
-                )
-                created.append(f"- **{c.name}** ({c.code}): {exam_date.strftime('%b %d, %Y')}")
-            
-            intro = f"🗓️ **Successfully Created Exam Schedule{' for Semester ' + str(semester) if semester else ''}{' (' + dept + ')' if dept else ''}:**\n"
-            return intro + "\n".join(created[:15]) + (f"\n*(...and {len(created)-15} more)*" if len(created) > 15 else "")
-
-        # ─── 5. VIEW TIMETABLE / SMART QUERIES ────────────────────────────
-        qs = Exam.objects.select_related('course').all()
-        if dept: qs = qs.filter(course__department__iexact=dept)
-        if semester: qs = qs.filter(course__semester=semester)
-        if target_date: qs = qs.filter(date=target_date)
-        
-        # Determine timeframe
-        if 'this week' in msg_lower:
-            qs = qs.filter(date__range=[now, now + timedelta(days=7)])
-        elif 'this month' in msg_lower:
-            qs = qs.filter(date__range=[now, now + timedelta(days=30)])
-        elif 'upcoming' in msg_lower or 'next' in msg_lower:
-            qs = qs.filter(date__gte=now)
-            
-        qs = qs.order_by('date', 'start_time')
-        
-        if 'how many' in msg_lower:
-            return f"📊 **{qs.count()} exams** are scheduled matching your query."
-            
-        if not qs.exists():
-            return "📋 No exams found matching your schedule query."
-            
         # Top 15 display
         lines = []
         for e in qs[:15]:
@@ -1594,221 +1274,59 @@ class AgentRouter:
     # 9. COURSE MANAGEMENT AGENT
     # -----------------------------------------------------------------
     def agent_course(self, message: str) -> str:
+        """Course Management Agent: Rebuilt for higher reliability and NLP precision."""
         msg_lower = message.lower()
-        
-        # Domain security constraints
-        domain_blocks = {
-            'student': 'Student', 'enroll': 'Student', 'gpa': 'Student', 'caste': 'Student',
-            'attendance': 'Attendance', 'present': 'Attendance', 'absent': 'Attendance',
-            'exam': 'Exam', 'schedule exam': 'Exam', 'timetable': 'Exam'
-        }
-        for kw, agent_name in domain_blocks.items():
-            if kw in msg_lower and not any(safe in msg_lower for safe in ['course', 'subject', 'elective', 'curriculum', 'credits']):
-                return f"⚠️ **Out of Scope:** This task belongs to the **{agent_name} Agent**. I am the **Course Management Agent**."
+        dept = NLPEngine.extract_dept(message)
+        semester = NLPEngine.extract_year(message) # Proxy for year/semester filter
 
-        # Common extractors
-        DEPT_PATTERN = r'\b(CS|CSE|IT|ECE|EEE|MECH|CIVIL|AI|DATA\s*SCIENCE|DS|ELECTRONICS)\b'
-        dept_m = re.search(DEPT_PATTERN, message.upper())
-        dept = dept_m.group(1).replace(' ', '') if dept_m else None
-        if dept == 'CSE': dept = 'CS'
-
-        sem_m = re.search(r'semester\s+(\d)', msg_lower)
-        semester = int(sem_m.group(1)) if sem_m else None
-        
-        c_type = 'Elective' if 'elective' in msg_lower else ('Core' if 'core' in msg_lower else None)
-
-        # ─── 0. HELPERS
+        # ─── 0. HELPERS / EXTRACTORS ──────────────────────────────────────
         def _extract_course_name(text):
             # Try specific patterns first
-            m = re.search(r'(?:called|named|course|subject)\s+([A-Z][a-zA-Z\s]+?)(?=\s+(?:for|to|in|from|course|subject|$))', text, re.IGNORECASE)
+            m = re.search(r'(?:called|named|course|subject)\s+([A-Z][a-zA-Z\s0-9]+?)(?=\s+(?:for|to|in|from|credits|dept|sem|semester|$))', text, re.IGNORECASE)
             if m and len(m.group(1).strip()) > 2:
                 name = m.group(1).strip().title()
                 if name.lower() not in ['course', 'subject', 'a', 'the', 'new']:
                     return name
             return None
 
-        # ─── 1. CREATE COURSE ─────────────────────────────────────────────
-        if any(kw in msg_lower for kw in ['create', 'add ', 'introduce', 'register ', 'include a new']):
-            # Explicitly guard against "assign" keywords masquerading as "add"
-            if not any(kw in msg_lower for kw in ['assign ', 'link ', 'to the cse', 'to the it', 'to the ece', 'to semester', 'add machine learning to']):
-                course_name = _extract_course_name(message)
-            if not course_name:
-                return "⚠️ Could not extract the course name. Please say something like: *Create a new course called Machine Learning for semester 6*."
-                
-            credits_m = re.search(r'(\d+)\s+credits?', msg_lower)
-            cr = int(credits_m.group(1)) if credits_m else 3 # Default 3
+        # ─── 1. VIEW / LIST COURSES ───────────────────────────────────────
+        if any(kw in msg_lower for kw in ['show', 'list', 'what subjects', 'curriculum', 'view']):
+            qs = Course.objects.all().order_by('semester', 'name')
+            if dept: qs = qs.filter(department=dept)
+            if semester: qs = qs.filter(semester__in=[2*semester-1, 2*semester])
             
-            # Generate a pseudo code based on dept and semester
-            c_dept = dept or 'GEN'
-            c_sem = semester or 1
-            code = f"{c_dept}{c_sem}0{random.randint(1,9)}"
+            if not qs.exists(): return "📚 No courses found matching your criteria."
             
-            ctype = c_type or 'Core'
-            
-            try:
-                c = Course.objects.create(
-                    name=course_name,
-                    code=code,
-                    department=dept,
-                    semester=semester,
-                    credits=cr,
-                    type=ctype,
-                    year=(semester + 1) // 2 if semester else None
-                )
-                return f"✅ **Course Successfully Created:**\n- **Name:** {c.name}\n- **Code:** {c.code}\n- **Type:** {c.type}\n- **Credits:** {c.credits}\n- **Semester:** {c.semester or 'Any'}\n- **Department:** {c.department or 'General'}"
-            except Exception as e:
-                return f"❌ Failed to create course: {str(e)}"
+            lines = [f"- **{c.name}** ({c.code}) | Sem {c.semester} | {c.credits} Credits" for c in qs[:20]]
+            header = f"📚 **Curriculum{' for ' + dept if dept else ''}{' Year ' + str(semester) if semester else ''}**\n"
+            return header + "\n".join(lines)
 
-        # ─── 2. UPDATE COURSE ─────────────────────────────────────────────
-        if any(kw in msg_lower for kw in ['update', 'change', 'modify', 'move', 'adjust']):
+        # ─── 2. CREATE / ADD COURSE (Teachers Only) ───────────────────────
+        if any(kw in msg_lower for kw in ['create', 'add ', 'introduce', 'new course']):
+            if self.role != 'teacher': return "🔒 Only faculty can modify the curriculum."
+            
             course_name = _extract_course_name(message)
+            if not course_name: return "⚠️ Please specify the course name. Example: *Create a new course called Machine Learning for semester 6*."
             
-            # Extract names without "course called" if standard extract fails
-            if not course_name:
-                alt_m = re.search(r'(?:for|of|to)\s+([A-Z][a-zA-Z\s]+)(?:course|subject)?', message)
-                if alt_m:
-                    n = alt_m.group(1).strip()
-                    if len(n) > 3 and not n.lower() in ['course', 'subject', 'a', 'the']:
-                        course_name = n
-            qs = Course.objects.all()
-            if course_name: qs = qs.filter(name__icontains=course_name)
-            elif dept: qs = qs.filter(department=dept) # Very risky, just as a fallback 
-            
-            if not qs.exists():
-                return f"❌ Could not find a course matching **{course_name or 'the request'}** to update."
-            if qs.count() > 1 and not course_name:
-                return "⚠️ Found multiple courses. Please specify the exact course name to update."
-                
-            course = qs.first()
-            updates = []
-            
-            # Change credits
-            cr_m = re.search(r'credits?\s+(?:to|of\s+.*?\s+to)\s+(\d+)', msg_lower)
-            if cr_m:
-                course.credits = int(cr_m.group(1))
-                updates.append(f"Credits → {course.credits}")
-                
-            # Change semester
-            if semester and course.semester != semester:
-                course.semester = semester
-                course.year = (semester + 1) // 2
-                updates.append(f"Semester → {course.semester}")
-                
-            # Change department (reassign)
-            if dept and course.department != dept:
-                course.department = dept
-                updates.append(f"Department → {course.department}")
-                
-            # Change type
-            if c_type and course.type != c_type:
-                course.type = c_type
-                updates.append(f"Type → {course.type}")
-                
-            if not updates:
-                return f"📝 Found course **{course.name}**, but couldn't determine what to update. Example: *Change credits of Data Structures to 4*."
-                
-            course.save()
-            return f"🔄 **Course Updated Successfully:**\n**{course.name}** ({course.code})\n" + "\n".join([f"- {u}" for u in updates])
+            code = (course_name[:2].upper() + str(random.randint(1000, 9999)))
+            Course.objects.create(
+                name=course_name, 
+                code=code, 
+                department=dept or "General", 
+                semester=semester or 1,
+                credits=3
+            )
+            return f"✅ **{course_name}** ({code}) has been added to the curriculum."
 
-        # ─── 3. DELETE COURSE ─────────────────────────────────────────────
-        if any(kw in msg_lower for kw in ['delete', 'remove', 'cancel']):
+        # ─── 3. DELETE / REMOVE ───────────────────────────────────────────
+        if any(kw in msg_lower for kw in ['delete', 'remove']) and self.role == 'teacher':
             course_name = _extract_course_name(message)
-            if not course_name:
-                alt_m = re.search(r'(?:delete|remove|cancel)\s+(?:the\s+)?([A-Z][a-zA-Z\s]+?)(?:\s+course|\s+subject|\s+from|\s+elective|$)', message, re.IGNORECASE)
-                if alt_m: course_name = alt_m.group(1).strip()
-                
-            if not course_name:
-                return "⚠️ Please specify the course name to delete. Example: *Delete the course Machine Learning*."
-                
-            qs = Course.objects.filter(name__icontains=course_name)
-            if not qs.exists():
-                return f"❌ Could not find course **{course_name}** in the curriculum."
-                
-            c = qs.first()
-            c_name, c_code = c.name, c.code
-            c.delete()
-            return f"🗑️ **Successfully Deleted Course:**\n- {c_name} ({c_code})"
+            if course_name:
+                c = Course.objects.filter(name__icontains=course_name).first()
+                if c:
+                    name = c.name
+                    c.delete()
+                    return f"🗑️ **{name}** has been removed from the curriculum."
+            return "⚠️ Please specify which course to delete."
 
-        # ─── 4. ASSIGN COURSE ─────────────────────────────────────────────
-        if any(kw in msg_lower for kw in ['assign ', 'link ', 'add machine learning to', 'add data analytics to', 'add blockchain', 'add mobile']):
-            course_name = _extract_course_name(message)
-            if not course_name:
-                 alt_m = re.search(r'(?:assign|add|link)\s+([A-Z][a-zA-Z\s]+?)(?:\s+to|\s+course|\s+subject)', message, re.IGNORECASE)
-                 if alt_m: course_name = alt_m.group(1).strip()
-            
-            if not course_name:
-                 return "⚠️ Please specify a course name to assign."
-            qs = Course.objects.filter(name__icontains=course_name)
-            if not qs.exists():
-                return f"❌ Could not find an existing course named **{course_name}**."
-                
-            c = qs.first()
-            assigned = []
-            if dept:
-                c.department = dept
-                assigned.append(f"Department: {dept}")
-            if semester:
-                c.semester = semester
-                c.year = (semester + 1) // 2
-                assigned.append(f"Semester: {semester}")
-                
-            if assigned:
-                c.save()
-                return f"✅ **Successfully Assigned {c.name}:**\n- " + "\n- ".join(assigned)
-            return "⚠️ Did not detect a target department or semester to assign the course to."
-
-        # ─── 5. VIEW / SMART QUERIES ──────────────────────────────────────
-        qs = Course.objects.all()
-        
-        # Filtering
-        if dept: qs = qs.filter(department=dept)
-        if semester: qs = qs.filter(semester=semester)
-        if c_type: qs = qs.filter(type=c_type)
-        
-        # Specific search string "final year"
-        if 'final year' in msg_lower:
-            qs = qs.filter(year=4)
-            
-        # Aggregations / counts
-        if 'highest credits' in msg_lower:
-            qs = qs.order_by('-credits')[:1]
-            if qs.exists():
-                c = qs.first()
-                return f"🏆 **Highest Credit Course:**\n- **{c.name}** ({c.code}) with **{c.credits} Credits**."
-                
-        if any(kw in msg_lower for kw in ['how many', 'count', 'what courses', 'which courses', 'list', 'show me', 'display']):
-            count = qs.count()
-            suffix = []
-            if semester: suffix.append(f"in Semester {semester}")
-            if dept: suffix.append(f"for {dept}")
-            if c_type: suffix.append(f"that are {c_type}")
-            suf_str = " ".join(suffix)
-            
-            if 'how many' in msg_lower or 'count' in msg_lower:
-                return f"📊 There are **{count} courses** {suf_str}."
-        
-        if 'what new courses' in msg_lower or 'recently' in msg_lower:
-            qs = qs.order_by('-id') # pseudo-recent
-            
-        if 'mandatory' in msg_lower:
-            qs = qs.filter(type__iexact='Core')
-            
-        if 'advanced' in msg_lower:
-            qs = qs.filter(name__icontains='Advanced')
-
-        if not qs.exists():
-            return "📋 No courses found matching your criteria."
-            
-        # Display list
-        lines = []
-        for c in qs[:20]:
-            cr_str = f"| {c.credits} Cr" if c.credits else ""
-            lines.append(f"- **{c.name}** ({c.code}) {cr_str}")
-            
-        header = "📚 **Course Curriculum List:**\n"
-        if semester: header = f"📚 **Semester {semester} Courses:**\n"
-        elif dept: header = f"📚 **{dept} Department Courses:**\n"
-        
-        msg = header + "\n".join(lines)
-        if qs.count() > 20: msg += f"\n\n*(Showing 20 of {qs.count()} courses)*"
-        return msg
+        return "📚 **Course Agent**: Try 'Show IT courses' or 'Add new course AI to semester 5'."
